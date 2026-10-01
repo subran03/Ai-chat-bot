@@ -26,3 +26,6 @@ ESP32
 
 ## Developer
 Subran Yadav
+
+## Run and test locally
+From the repository root, run `python .\net\server.py`, then open http://localhost:8000. The expected response is: `Hello from AI Chatbot Server!`
