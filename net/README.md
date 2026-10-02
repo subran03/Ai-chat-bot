@@ -1,31 +1,24 @@
 # Networking Module
+This module handles the communication between the client and the server for the AI chatbot.
+## Files
+- `server.py` - Runs the Python server and listens for client requests.
+- `test/client.py` - A simple client used to test communication with the server.
 
-## Responsibility
-This module handles the network communication of the AI chatbot.
-
-## Main Tasks
-- Connect the ESP32 to Wi-Fi
-- Send data from the ESP32 to the backend
-- Receive responses from the backend
-- Handle connection failures and timeouts
-- Reconnect when the network connection is lost
-- Measure network communication latency
+## Current Progress
+- Basic Python HTTP server created.
+- Server tested successfully on localhost.
+- Client program created for testing.
+- Client successfully connects to the server and receives a response.
 
 ## Communication Flow
-ESP32
-↓
-Wi-Fi
-↓
-Backend
-↓
-AI Service
-↓
-Backend
-↓
-ESP32
+Client → HTTP Request → Server → HTTP Response → Client
 
 ## Developer
 Subran Yadav
 
 ## Run and test locally
-From the repository root, run `python .\net\server.py`, then open http://localhost:8000. The expected response is: `Hello from AI Chatbot Server!`
+From the repository root, 
+run `python net/server.py`, 
+run `python net/test/client.py`
+then open http://localhost:8000. 
+Server response: `Hello from AI Chatbot Server!`
