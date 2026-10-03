@@ -1,7 +1,8 @@
 import pyttsx3
+engine = pyttsx3.init()
 def speak(text):
-    engine = pyttsx3.init()
     engine.say(text)
     engine.runAndWait()
 if __name__ == "__main__":
-    speak("Hello, I am your AI chatbot.")
+    text = input("Enter text to speak: ")
+    speak(text)
