@@ -5,6 +5,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from ai.assistant import get_response
 class RequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"AI Chatbot server is running. Send a POST request to chat.")
     def do_POST(self):
         try:
             content_length = int(self.headers.get("content-length", 0))
