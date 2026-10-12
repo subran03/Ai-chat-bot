@@ -60,7 +60,7 @@ class AudioHandler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            expected_length = SAMPLE_RATE * 5 * 2
+            expected_length = SAMPLE_RATE * 8 * 2
             if length != expected_length:
                 self.send_error(
                     400,

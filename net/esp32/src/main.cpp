@@ -18,7 +18,7 @@ const uint16_t serverPort = 8001;
 #define I2S_SD   33
 
 #define SAMPLE_RATE 16000
-#define RECORD_SECONDS 5
+#define RECORD_SECONDS 8
 #define SAMPLE_COUNT (SAMPLE_RATE * RECORD_SECONDS)
 #define CHUNK_SAMPLES 1024
 
