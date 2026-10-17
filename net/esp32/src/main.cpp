@@ -27,7 +27,7 @@ void sendMessage(String message)
     String json;
     serializeJson(doc, json);
 
-    Serial.println("Sending message to AI...");
+    Serial.println("Sending message to OLLAMA...");
     int httpCode = http.POST(json);
 
     Serial.print("HTTP response code: ");
@@ -41,14 +41,9 @@ void sendMessage(String message)
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, response);
 
-    Serial.print("AI:");
-    String answer = doc["response"].as<String>();
-    answer.replace("\\n", "\n");
-    Serial.println(answer);
-
     if (!error && doc["response"].is<const char*>()) 
     {
-        Serial.println("AI:");
+        Serial.println("OLLAMA:");
         String answer = doc["response"].as<String>();
         answer.replace("\\n", "\n");
         Serial.println(answer);
@@ -86,7 +81,7 @@ void setup()
     Serial.println("Wi-Fi connected!");
     Serial.print("ESP32 IP address: ");
     Serial.println(WiFi.localIP());
-    Serial.print("Ask your question to the AI:");
+    Serial.print("Ask Ollama:");
 }
 void loop() 
 {
@@ -102,7 +97,7 @@ void loop()
                 sendMessage(message);
                 message = "";
                 Serial.println();
-                Serial.print("Ask your question to the AI:");
+                Serial.print("Ask Ollama:");
             }
         }
         else if (c == '\b' || c == 127)

@@ -1,0 +1,57 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ESP32: Build",
+            "type": "process",
+            "command": "C:/Users/subra/.platformio/penv/Scripts/platformio.exe",
+            "args": [
+                "run"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP32: Upload",
+            "type": "process",
+            "command": "C:/Users/subra/.platformio/penv/Scripts/platformio.exe",
+            "args": [
+                "run",
+                "--target",
+                "upload"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP32: Serial Monitor",
+            "type": "process",
+            "command": "C:/Users/subra/.platformio/penv/Scripts/platformio.exe",
+            "args": [
+                "device",
+                "monitor",
+                "--port",
+                "COM3",
+                "--baud",
+                "115200"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "type": "PlatformIO",
+            "task": "Build",
+            "problemMatcher": [
+                "$platformio"
+            ],
+            "group": "build",
+            "label": "PlatformIO: Build"
+        }
+    ]
+}

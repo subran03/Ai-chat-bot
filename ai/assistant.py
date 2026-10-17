@@ -1,9 +1,22 @@
-import os
-from openai import OpenAI
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+import requests
+
+
 def get_response(message):
-    response = client.responses.create(
-        model=os.environ.get("OPENAI_MODEL", "gpt-6-luna"),
-        input=message
-    )
-    return response.output_text
+    """Generate a reply using the local Gemma model through Ollama."""
+
+    url = "http://localhost:11434/api/chat"
+
+    payload = {
+        "model": "gemma3:4b",
+        "messages": [
+            {"role": "user", "content": message}
+        ],
+        "stream": False
+    }
+
+    response = requests.post(url, json=payload, timeout=120)
+    response.raise_for_status()
+
+    data = response.json()
+    return data["message"]["content"].strip()
