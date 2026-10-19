@@ -1,33 +1,59 @@
-import time
 import pyttsx3
-def speak(text):
-    """Speak text through the laptop's default audio output."""
-    if not isinstance(text, str) or not text.strip():
-        print("TTS error: text is empty or invalid.")
-        return None
-    engine = None
+import threading
+import time
+from pynput import keyboard as pynput_keyboard
+
+engine = pyttsx3.init()
+engine.setProperty("rate", 175)
+engine.setProperty(
+    "voice",
+    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0"
+)
+
+stop_requested = threading.Event()
+speaking = threading.Event()
+
+
+def on_press(key):
     try:
-        start_time = time.perf_counter()
-        # Create a fresh engine for each response
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 175)
+        if key.char and key.char.lower() == "s" and speaking.is_set():
+            stop_requested.set()
+    except AttributeError:
+        pass
+
+
+listener = pynput_keyboard.Listener(on_press=on_press)
+listener.start()
+
+
+def speak(text):
+    stop_requested.clear()
+    speaking.set()
+    start = time.time()
+    loop_started = False
+
+    try:
+        engine.startLoop(False)
+        loop_started = True
         engine.say(text)
-        engine.runAndWait()
-        latency = time.perf_counter() - start_time
-        print(f"TTS latency: {latency:.3f} seconds")
-        return latency
-    except Exception as error:
-        print("TTS playback failed:", error)
-        return None
+
+        while engine.isBusy():
+            if stop_requested.is_set():
+                engine.stop()
+                break
+
+            engine.iterate()
+            time.sleep(0.01)
+
     finally:
-        if engine is not None:
+        if loop_started:
             try:
                 engine.stop()
-            except Exception:
-                pass
-if __name__ == "__main__":
-    while True:
-        text = input("Enter text to speak (or exit): ")
-        if text.strip().lower() == "exit":
-            break
-        speak(text)
+                engine.endLoop()
+            except Exception as exc:
+                print(f"TTS cleanup error: {exc}")
+
+        speaking.clear()
+        stop_requested.clear()
+
+    print(f"TTS latency: {time.time() - start:.2f}s")
