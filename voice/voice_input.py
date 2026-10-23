@@ -85,7 +85,8 @@ class AudioHandler(BaseHTTPRequestHandler):
         print("HTTP:", format % args)
 if __name__ == "__main__":
     server = HTTPServer(("0.0.0.0", RECEIVER_PORT), AudioHandler)
-    print(f"Audio receiver listening on port {RECEIVER_PORT}")
+    print (f"Audio receiver listening on port {RECEIVER_PORT}")
+    print("testing")
     print("Start your AI server separately, then press r in ESP32 Serial Monitor.")
     try:
         server.serve_forever()
