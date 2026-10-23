@@ -1,23 +1,34 @@
 import sys
+import time
 import wave
 import threading
 import traceback
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import requests
 from faster_whisper import WhisperModel
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 AUDIO_DIR = PROJECT_DIR / "test_audio"
 AUDIO_DIR.mkdir(exist_ok=True)
+
 SAMPLE_RATE = 16000
 RECORD_SECONDS = 8
 RECEIVER_PORT = 8001
 AI_SERVER_URL = "http://127.0.0.1:8000"
+
 sys.path.insert(0, str(PROJECT_DIR))
+
+from voice.tts import generate_pcm
+
 print("Loading speech recognition model...")
 model = WhisperModel("base", device="cpu", compute_type="int8")
 print("Speech recognition ready.")
+
 processing_lock = threading.Lock()
+
+
 def process_audio(pcm_data):
     wav_path = AUDIO_DIR / "inmp441_recording.wav"
 
@@ -30,30 +41,33 @@ def process_audio(pcm_data):
     print("\nAudio saved:", wav_path)
     print("Transcribing audio...")
 
+    whisper_start = time.perf_counter()
     segments, _ = model.transcribe(
         str(wav_path),
         language="en",
         vad_filter=True
     )
-
     message = " ".join(
         segment.text.strip() for segment in segments
     ).strip()
 
+    print(f"Whisper transcription time: {time.perf_counter() - whisper_start:.2f}s")
+
     if not message:
-        print("No speech recognized. Please try again.")
-        return "No speech recognized."
+        return "text/plain; charset=utf-8", b"No speech recognized."
 
     print("\nYou said:", message)
     print("Waiting for AI response...")
 
     try:
+        gemma_start = time.perf_counter()
         response = requests.post(
             AI_SERVER_URL,
             json={"message": message},
             timeout=(5, 300)
         )
         response.raise_for_status()
+        print(f"Gemma HTTP response time: {time.perf_counter() - gemma_start:.2f}s")
 
         result = response.json()
         answer = result.get("response")
@@ -62,20 +76,23 @@ def process_audio(pcm_data):
             raise RuntimeError(f"Invalid AI response: {result}")
 
         print("\nAI:", answer)
+        print("Generating speech audio...")
 
-        try:
-            from voice.tts import speak
-            speak(answer)
-        except Exception:
-            print("Text-to-speech failed:")
-            traceback.print_exc()
+        tts_start = time.perf_counter()
+        output_pcm = generate_pcm(answer)
+        print(f"TTS generation time: {time.perf_counter() - tts_start:.2f}s")
+        print(f"Audio generated: {len(output_pcm)} bytes, {len(output_pcm) / (SAMPLE_RATE * 2):.2f}s")
 
-        return "Processing complete."
+        if not output_pcm:
+            raise RuntimeError("TTS generated empty audio.")
+
+        # Mono, signed 16-bit little-endian PCM at 16 kHz.
+        return "audio/pcm", output_pcm
 
     except Exception as exc:
-        print("AI request failed:", exc)
+        print("AI/TTS processing failed:", exc)
         traceback.print_exc()
-        return "AI request failed."
+        return "text/plain; charset=utf-8", f"AI/TTS failed: {exc}".encode("utf-8", errors="replace")
 
 
 class AudioHandler(BaseHTTPRequestHandler):
@@ -96,27 +113,31 @@ class AudioHandler(BaseHTTPRequestHandler):
                 return
 
             pcm_data = self.rfile.read(length)
-
             if len(pcm_data) != length:
                 self.send_error(400, "Incomplete audio data")
                 return
 
-            # Wait for the previous answer to finish instead of returning 503.
             with processing_lock:
-                result = process_audio(pcm_data)
+                content_type, body = process_audio(pcm_data)
 
-            body = result.encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Sample-Rate", str(SAMPLE_RATE))
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(body)
 
-            print("\nReady. Press r in ESP32 Serial Monitor to record again.")
+            self.wfile.write(body)
+            self.wfile.flush()
+
+            if content_type == "audio/pcm":
+                print("Speech audio sent to ESP32.")
+            else:
+                print("Text response sent to ESP32.")
 
         except (BrokenPipeError, ConnectionResetError):
-            print("ESP32 disconnected while waiting for processing.")
+            print("ESP32 disconnected during processing or audio transfer.")
+
         except Exception:
             print("Audio receiver error:")
             traceback.print_exc()
@@ -130,11 +151,7 @@ class AudioHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(
-        ("0.0.0.0", RECEIVER_PORT),
-        AudioHandler
-    )
-
+    server = ThreadingHTTPServer(("0.0.0.0", RECEIVER_PORT), AudioHandler)
     print(f"Audio receiver listening on port {RECEIVER_PORT}")
     print("Start the AI server separately.")
     print("Press r in ESP32 Serial Monitor to record.")

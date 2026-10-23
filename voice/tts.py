@@ -1,59 +1,72 @@
+import audioop
+import tempfile
+import wave
+from pathlib import Path
+
 import pyttsx3
-import threading
-import time
-from pynput import keyboard as pynput_keyboard
 
-engine = pyttsx3.init()
-engine.setProperty("rate", 175)
-engine.setProperty(
-    "voice",
-    r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech\Voices\Tokens\TTS_MS_EN-US_ZIRA_11.0"
-)
-
-stop_requested = threading.Event()
-speaking = threading.Event()
+SAMPLE_RATE = 16000
 
 
-def on_press(key):
-    try:
-        if key.char and key.char.lower() == "s" and speaking.is_set():
-            stop_requested.set()
-    except AttributeError:
-        pass
+def generate_pcm(text: str) -> bytes:
+    """Generate 16 kHz, mono, signed 16-bit PCM without local playback."""
 
+    with tempfile.TemporaryDirectory() as temp_dir:
+        wav_path = Path(temp_dir) / "tts.wav"
 
-listener = pynput_keyboard.Listener(on_press=on_press)
-listener.start()
+        engine = pyttsx3.init()
 
+        # List available Windows voices and select a female voice.
+        voices = engine.getProperty("voices")
+        selected_voice = None
 
-def speak(text):
-    stop_requested.clear()
-    speaking.set()
-    start = time.time()
-    loop_started = False
+        for voice in voices:
+            print(f"Available voice: {voice.name} ({voice.id})")
 
-    try:
-        engine.startLoop(False)
-        loop_started = True
-        engine.say(text)
-
-        while engine.isBusy():
-            if stop_requested.is_set():
-                engine.stop()
+            if "zira" in voice.name.lower():
+                selected_voice = voice
                 break
 
-            engine.iterate()
-            time.sleep(0.01)
+        if selected_voice is None:
+            for voice in voices:
+                if "female" in voice.name.lower():
+                    selected_voice = voice
+                    break
 
-    finally:
-        if loop_started:
-            try:
-                engine.stop()
-                engine.endLoop()
-            except Exception as exc:
-                print(f"TTS cleanup error: {exc}")
+        if selected_voice is not None:
+            engine.setProperty("voice", selected_voice.id)
+            print(f"Selected voice: {selected_voice.name}")
+        else:
+            print("No known female voice found; using the Windows default.")
 
-        speaking.clear()
-        stop_requested.clear()
+        engine.setProperty("rate", 175)
+        engine.save_to_file(text, str(wav_path))
+        engine.runAndWait()
+        engine.stop()
 
-    print(f"TTS latency: {time.time() - start:.2f}s")
+        if not wav_path.exists() or wav_path.stat().st_size <= 44:
+            raise RuntimeError("TTS did not generate a valid WAV file.")
+
+        with wave.open(str(wav_path), "rb") as wav:
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            source_rate = wav.getframerate()
+            pcm = wav.readframes(wav.getnframes())
+
+        if sample_width != 2:
+            raise RuntimeError(
+                f"Expected 16-bit audio, got {sample_width * 8}-bit."
+            )
+
+        if channels == 2:
+            pcm = audioop.tomono(pcm, 2, 0.5, 0.5)
+        elif channels != 1:
+            raise RuntimeError(f"Unsupported channel count: {channels}")
+
+        if source_rate != SAMPLE_RATE:
+            pcm, _ = audioop.ratecv(
+                pcm, 2, 1, source_rate, SAMPLE_RATE, None
+            )
+
+        return pcm
+

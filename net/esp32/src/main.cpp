@@ -8,16 +8,28 @@ const char* password = "12345678";
 const char* serverIP = "192.168.137.1";
 const uint16_t serverPort = 8001;
 
-#define I2S_BCLK 26
-#define I2S_WS   25
-#define I2S_SD   33
+#define MIC_BCLK 26
+#define MIC_WS   25
+#define MIC_SD   33
+
+#define SPK_BCLK 27
+#define SPK_LRC  14
+#define SPK_DIN  22
 
 #define SAMPLE_RATE 16000
 #define RECORD_SECONDS 8
 #define SAMPLE_COUNT (SAMPLE_RATE * RECORD_SECONDS)
-#define CHUNK_SAMPLES 1024
+#define CHUNK_SAMPLES 256
 
 const unsigned long RESPONSE_TIMEOUT_MS = 300000;
+
+// Static buffers reduce stack use and help prevent stack overflow.
+static int32_t micRawSamples[CHUNK_SAMPLES];
+static int16_t micPcmSamples[CHUNK_SAMPLES];
+
+static int16_t speakerMonoSamples[CHUNK_SAMPLES];
+static int16_t speakerStereoSamples[CHUNK_SAMPLES * 2];
+static uint8_t textBuffer[128];
 
 bool setupMicrophone() {
     i2s_config_t config = {};
@@ -34,29 +46,68 @@ bool setupMicrophone() {
     config.fixed_mclk = 0;
 
     i2s_pin_config_t pins = {};
-    pins.bck_io_num = I2S_BCLK;
-    pins.ws_io_num = I2S_WS;
+    pins.bck_io_num = MIC_BCLK;
+    pins.ws_io_num = MIC_WS;
     pins.data_out_num = I2S_PIN_NO_CHANGE;
-    pins.data_in_num = I2S_SD;
+    pins.data_in_num = MIC_SD;
 
-    esp_err_t result =
-        i2s_driver_install(I2S_NUM_0, &config, 0, nullptr);
+    esp_err_t err = i2s_driver_install(I2S_NUM_0, &config, 0, nullptr);
 
-    if (result != ESP_OK) {
-        Serial.printf("I2S driver install failed: %d\n", result);
+    if (err != ESP_OK) {
+        Serial.printf("Mic I2S install failed: %d\n", err);
         return false;
     }
 
-    result = i2s_set_pin(I2S_NUM_0, &pins);
+    err = i2s_set_pin(I2S_NUM_0, &pins);
 
-    if (result != ESP_OK) {
-        Serial.printf("I2S pin setup failed: %d\n", result);
+    if (err != ESP_OK) {
+        Serial.printf("Mic I2S pin setup failed: %d\n", err);
         i2s_driver_uninstall(I2S_NUM_0);
         return false;
     }
 
     i2s_zero_dma_buffer(I2S_NUM_0);
-    Serial.println("Microphone interface ready.");
+    Serial.println("Microphone ready.");
+    return true;
+}
+
+bool setupSpeaker() {
+    i2s_config_t config = {};
+    config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+    config.sample_rate = SAMPLE_RATE;
+    config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+    config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+    config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    config.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+    config.dma_buf_count = 8;
+    config.dma_buf_len = 256;
+    config.use_apll = false;
+    config.tx_desc_auto_clear = true;
+    config.fixed_mclk = 0;
+
+    i2s_pin_config_t pins = {};
+    pins.bck_io_num = SPK_BCLK;
+    pins.ws_io_num = SPK_LRC;
+    pins.data_out_num = SPK_DIN;
+    pins.data_in_num = I2S_PIN_NO_CHANGE;
+
+    esp_err_t err = i2s_driver_install(I2S_NUM_1, &config, 0, nullptr);
+
+    if (err != ESP_OK) {
+        Serial.printf("Speaker I2S install failed: %d\n", err);
+        return false;
+    }
+
+    err = i2s_set_pin(I2S_NUM_1, &pins);
+
+    if (err != ESP_OK) {
+        Serial.printf("Speaker I2S pin setup failed: %d\n", err);
+        i2s_driver_uninstall(I2S_NUM_1);
+        return false;
+    }
+
+    i2s_zero_dma_buffer(I2S_NUM_1);
+    Serial.println("Speaker ready.");
     return true;
 }
 
@@ -64,21 +115,23 @@ bool writeAll(WiFiClient& client, const uint8_t* data, size_t length) {
     size_t sent = 0;
 
     while (sent < length) {
-        size_t written = client.write(data + sent, length - sent);
+        size_t n = client.write(data + sent, length - sent);
 
-        if (written == 0) {
+        if (n == 0) {
             return false;
         }
 
-        sent += written;
+        sent += n;
     }
 
     return true;
 }
 
-// Reads one HTTP line, allowing for CRLF line endings.
-bool readHttpLine(WiFiClient& client, String& line,
-                  unsigned long& lastProgress) {
+bool readHttpLine(
+    WiFiClient& client,
+    String& line,
+    unsigned long& lastProgress
+) {
     line = "";
 
     while (millis() - lastProgress < RESPONSE_TIMEOUT_MS) {
@@ -94,7 +147,6 @@ bool readHttpLine(WiFiClient& client, String& line,
             if (c != '\r') {
                 line += c;
 
-                // Avoid allocating unlimited memory for a malformed header.
                 if (line.length() > 1024) {
                     return false;
                 }
@@ -105,10 +157,130 @@ bool readHttpLine(WiFiClient& client, String& line,
             return false;
         }
 
-        delay(5);
+        delay(2);
     }
 
     return false;
+}
+
+bool readExact(
+    WiFiClient& client,
+    uint8_t* dst,
+    size_t length,
+    unsigned long& lastProgress
+) {
+    size_t received = 0;
+
+    while (received < length) {
+        int availableBytes = client.available();
+
+        if (availableBytes > 0) {
+            size_t wanted = length - received;
+
+            if (wanted > (size_t)availableBytes) {
+                wanted = (size_t)availableBytes;
+            }
+
+            int n = client.read(dst + received, wanted);
+
+            if (n > 0) {
+                received += (size_t)n;
+                lastProgress = millis();
+            }
+        } else {
+            if (!client.connected()) {
+                return false;
+            }
+
+            if (millis() - lastProgress >= RESPONSE_TIMEOUT_MS) {
+                return false;
+            }
+
+            delay(2);
+        }
+    }
+
+    return true;
+}
+
+bool playPcmResponse(WiFiClient& client, int contentLength) {
+    if (contentLength <= 0 || (contentLength % 2) != 0) {
+        Serial.println("Invalid PCM payload length.");
+        return false;
+    }
+
+    size_t remaining = (size_t)contentLength;
+    unsigned long lastProgress = millis();
+
+    Serial.printf(
+        "Playing %.2f seconds of speech...\n",
+        remaining / (float)(SAMPLE_RATE * 2)
+    );
+
+    while (remaining > 0) {
+        size_t bytesToRead = remaining;
+
+        if (bytesToRead > sizeof(speakerMonoSamples)) {
+            bytesToRead = sizeof(speakerMonoSamples);
+        }
+
+        // PCM samples are 16-bit, so keep reads sample-aligned.
+        bytesToRead &= ~((size_t)1);
+
+        if (!readExact(
+                client,
+                (uint8_t*)speakerMonoSamples,
+                bytesToRead,
+                lastProgress
+            )) {
+            Serial.println("Audio download incomplete.");
+            return false;
+        }
+
+        size_t sampleCount = bytesToRead / sizeof(int16_t);
+
+        // MAX98357A receives stereo I2S frames; duplicate mono audio.
+        for (size_t i = 0; i < sampleCount; i++) {
+            speakerStereoSamples[2 * i] = speakerMonoSamples[i];
+            speakerStereoSamples[2 * i + 1] = speakerMonoSamples[i];
+        }
+
+        const size_t bytesExpected =
+            sampleCount * 2 * sizeof(int16_t);
+
+        size_t bytesWritten = 0;
+
+        esp_err_t err = i2s_write(
+            I2S_NUM_1,
+            speakerStereoSamples,
+            bytesExpected,
+            &bytesWritten,
+            pdMS_TO_TICKS(1000)
+        );
+
+        if (err != ESP_OK) {
+            Serial.printf("Speaker I2S write failed: %d\n", err);
+            return false;
+        }
+
+        if (bytesWritten != bytesExpected) {
+            Serial.printf(
+                "Incomplete I2S write: %u of %u bytes\n",
+                (unsigned int)bytesWritten,
+                (unsigned int)bytesExpected
+            );
+            return false;
+        }
+
+        remaining -= bytesToRead;
+    }
+
+    // Allow the final buffered samples to finish.
+    // This legacy driver version does not expose i2s_wait_tx_done().
+    delay(150);
+
+    Serial.println("Playback finished.");
+    return true;
 }
 
 bool readHttpResponse(WiFiClient& client) {
@@ -117,22 +289,22 @@ bool readHttpResponse(WiFiClient& client) {
     unsigned long lastProgress = millis();
     String line;
 
-    // Read HTTP status line.
     if (!readHttpLine(client, line, lastProgress)) {
-        Serial.println("Timed out waiting for HTTP status.");
+        Serial.println("Timed out reading HTTP status.");
         return false;
     }
 
     String statusLine = line;
+
     Serial.print("Server response: ");
     Serial.println(statusLine);
 
-    // Read headers and find Content-Length.
     int contentLength = -1;
+    String contentType = "";
 
     while (true) {
         if (!readHttpLine(client, line, lastProgress)) {
-            Serial.println("Failed while reading HTTP headers.");
+            Serial.println("Failed reading HTTP headers.");
             return false;
         }
 
@@ -140,53 +312,59 @@ bool readHttpResponse(WiFiClient& client) {
             break;
         }
 
-        String lowerLine = line;
-        lowerLine.toLowerCase();
+        String lower = line;
+        lower.toLowerCase();
 
-        if (lowerLine.startsWith("content-length:")) {
+        if (lower.startsWith("content-length:")) {
             contentLength =
                 line.substring(line.indexOf(':') + 1).toInt();
+        } else if (lower.startsWith("content-type:")) {
+            contentType = line.substring(line.indexOf(':') + 1);
+            contentType.trim();
+            contentType.toLowerCase();
         }
     }
 
-    // This receiver should return Content-Length for its response body.
     if (contentLength < 0) {
-        Serial.println("Missing Content-Length header.");
+        Serial.println("Missing Content-Length.");
         return false;
     }
 
-    Serial.println("HTTP headers received. Reading response body...");
+    if (statusLine.indexOf("200") < 0) {
+        Serial.println("HTTP request failed.");
+        return false;
+    }
 
-    // Read exactly Content-Length bytes. Do not wait for connection close.
-    int received = 0;
+    if (contentType.startsWith("audio/pcm")) {
+        return playPcmResponse(client, contentLength);
+    }
 
-    while (received < contentLength) {
-        while (client.available() && received < contentLength) {
-            char c = (char)client.read();
-            Serial.write(c);
-            received++;
-            lastProgress = millis();
-        }
+    Serial.print("Server message: ");
 
-        if (received >= contentLength) {
-            break;
-        }
+    size_t remaining = (size_t)contentLength;
+    unsigned long lastProgressText = millis();
 
-        if (!client.connected() && !client.available()) {
-            Serial.println("\nConnection closed before body was complete.");
+    while (remaining > 0) {
+        size_t n = remaining > sizeof(textBuffer)
+            ? sizeof(textBuffer)
+            : remaining;
+
+        if (!readExact(
+                client,
+                textBuffer,
+                n,
+                lastProgressText
+            )) {
+            Serial.println("\nIncomplete text response.");
             return false;
         }
 
-        if (millis() - lastProgress >= RESPONSE_TIMEOUT_MS) {
-            Serial.println("\nTimed out reading HTTP response body.");
-            return false;
-        }
-
-        delay(5);
+        Serial.write(textBuffer, n);
+        remaining -= n;
     }
 
     Serial.println();
-    return statusLine.indexOf("200") >= 0;
+    return false;
 }
 
 void sendAudio() {
@@ -208,12 +386,11 @@ void sendAudio() {
     client.print("POST /audio HTTP/1.1\r\n");
     client.printf("Host: %s:%u\r\n", serverIP, serverPort);
     client.print("Content-Type: application/octet-stream\r\n");
-    client.printf("Content-Length: %u\r\n",
-                  (unsigned int)(SAMPLE_COUNT * 2));
+    client.printf(
+        "Content-Length: %u\r\n",
+        (unsigned int)(SAMPLE_COUNT * sizeof(int16_t))
+    );
     client.print("Connection: close\r\n\r\n");
-
-    int32_t rawSamples[CHUNK_SAMPLES];
-    int16_t pcmSamples[CHUNK_SAMPLES];
 
     size_t totalSamples = 0;
     int32_t peakLevel = 0;
@@ -223,36 +400,37 @@ void sendAudio() {
     while (totalSamples < SAMPLE_COUNT) {
         size_t bytesRead = 0;
 
-        esp_err_t result = i2s_read(
+        esp_err_t err = i2s_read(
             I2S_NUM_0,
-            rawSamples,
-            sizeof(rawSamples),
+            micRawSamples,
+            sizeof(micRawSamples),
             &bytesRead,
             portMAX_DELAY
         );
 
-        if (result != ESP_OK || bytesRead == 0) {
+        if (err != ESP_OK || bytesRead == 0) {
             Serial.println("Microphone read failed.");
             client.stop();
             return;
         }
 
         size_t samplesRead = bytesRead / sizeof(int32_t);
-        size_t remaining = SAMPLE_COUNT - totalSamples;
+        size_t remainingSamples = SAMPLE_COUNT - totalSamples;
 
-        if (samplesRead > remaining) {
-            samplesRead = remaining;
+        if (samplesRead > remainingSamples) {
+            samplesRead = remainingSamples;
         }
 
         for (size_t i = 0; i < samplesRead; i++) {
-            int32_t sample = rawSamples[i] >> 14;
+            int32_t sample = micRawSamples[i] >> 14;
 
             if (sample > 32767) sample = 32767;
             if (sample < -32768) sample = -32768;
 
-            pcmSamples[i] = (int16_t)sample;
+            micPcmSamples[i] = (int16_t)sample;
 
-            int32_t magnitude = abs((int)pcmSamples[i]);
+            int32_t magnitude = abs((int)micPcmSamples[i]);
+
             if (magnitude > peakLevel) {
                 peakLevel = magnitude;
             }
@@ -260,8 +438,9 @@ void sendAudio() {
 
         if (!writeAll(
                 client,
-                (const uint8_t*)pcmSamples,
-                samplesRead * sizeof(int16_t))) {
+                (const uint8_t*)micPcmSamples,
+                samplesRead * sizeof(int16_t)
+            )) {
             Serial.println("Audio upload failed.");
             client.stop();
             return;
@@ -272,17 +451,16 @@ void sendAudio() {
 
     Serial.println("Recording complete.");
     Serial.printf("Audio peak level: %ld\n", (long)peakLevel);
-    Serial.println("Waiting for AI response and speech to finish...");
+    Serial.println("Waiting for AI response and speaker playback...");
 
     bool success = readHttpResponse(client);
-
     client.stop();
 
-    if (success) {
-        Serial.println("Request completed successfully.");
-    } else {
-        Serial.println("Request finished with an error or timeout.");
-    }
+    Serial.println(
+        success
+            ? "Request completed successfully."
+            : "Request finished with an error."
+    );
 
     Serial.println("\nReady. Press r then Enter to record again.");
 }
@@ -305,12 +483,21 @@ void setup() {
 
     if (!setupMicrophone()) {
         Serial.println("Microphone initialization failed.");
+
         while (true) {
             delay(1000);
         }
     }
 
-    Serial.println("Press r then Enter to record 8 seconds of audio.");
+    if (!setupSpeaker()) {
+        Serial.println("Speaker initialization failed.");
+
+        while (true) {
+            delay(1000);
+        }
+    }
+
+    Serial.println("Press r to record 8 seconds of audio.");
 }
 
 void loop() {
